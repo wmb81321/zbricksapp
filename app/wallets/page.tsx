@@ -11,6 +11,19 @@ type LoginResult = {
   encryptionKey: string;
 };
 
+type LoginError = {
+  code?: number;
+  message?: string;
+};
+
+type TokenBalanceEntry = {
+  amount?: string;
+  token?: {
+    symbol?: string;
+    name?: string;
+  };
+};
+
 type Wallet = {
   id: string;
   address: string;
@@ -46,19 +59,14 @@ export default function HomePage() {
 
     const initSdk = async () => {
       try {
-        const onLoginComplete = (error: unknown, result: any) => {
+        const onLoginComplete = (
+          error?: LoginError | null,
+          result?: LoginResult | null,
+        ) => {
           if (cancelled) return;
 
           if (error || !result) {
-            // Always treat this as a soft failure
-            const err = (error || {}) as any;
-            const message: string =
-              err?.message || "Email authentication failed.";
-
-            console.log("Email auth failed:", {
-              code: err?.code,
-              message,
-            });
+            const message: string = error?.message || "Email authentication failed.";
 
             setIsError(true);
             setStatus(message);
@@ -165,7 +173,7 @@ export default function HomePage() {
         return null;
       }
 
-      const balances = (data.tokenBalances as any[]) || [];
+      const balances = (data.tokenBalances as TokenBalanceEntry[]) || [];
 
       const usdcEntry =
         balances.find((t) => {
@@ -378,8 +386,9 @@ export default function HomePage() {
       setChallengeId(data.challengeId);
       setIsError(false);
       setStatus(`User initialized. Click Create wallet to continue.`);
-    } catch (err: any) {
-      if (err?.code === 155106 && loginResult?.userToken) {
+    } catch (err: unknown) {
+      const error = err as LoginError | undefined;
+      if (error?.code === 155106 && loginResult?.userToken) {
         await loadWallets(loginResult.userToken, {
           source: "alreadyInitialized",
         });
@@ -387,9 +396,9 @@ export default function HomePage() {
         return;
       }
 
-      const errorMsg = err?.code
-        ? `[${err.code}] ${err.message}`
-        : err?.message || "Unknown error";
+      const errorMsg = error?.code
+        ? `[${error.code}] ${error.message}`
+        : error?.message || "Unknown error";
       setIsError(true);
       setStatus("Failed to initialize user: " + errorMsg);
     }
@@ -424,12 +433,13 @@ export default function HomePage() {
     setStatus("Executing challenge...");
 
     sdk.execute(challengeId, (error) => {
-      const err = (error || {}) as any;
-
       if (error) {
-        console.log("Execute challenge failed:", err);
+        const message =
+          typeof error === "object" && error && "message" in error
+            ? String((error as LoginError).message)
+            : "Unknown error";
         setIsError(true);
-        setStatus("Failed to execute challenge: " + (err?.message ?? "Unknown error"));
+        setStatus("Failed to execute challenge: " + message);
         return;
       }
 

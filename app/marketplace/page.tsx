@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 interface Property {
@@ -13,12 +14,29 @@ interface Property {
   status: "Activa" | "Finalizada";
 }
 
+type TokenBalanceEntry = {
+  amount?: string;
+  token?: {
+    symbol?: string;
+    name?: string;
+  };
+};
+
 type Tab = "subasta" | "cerrada" | "mercado";
 type StatusFilter = "Todas" | "Activa" | "Finalizada";
 
 export default function MarketplacePage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [properties, setProperties] = useState<Property[]>([]);
+  const [walletAddress] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return window.localStorage.getItem("w3s_wallet_address") ?? "";
+  });
+  const [walletBalance, setWalletBalance] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem("w3s_wallet_usdc");
+  });
 
   // UI state
   const [activeTab, setActiveTab] = useState<Tab>("mercado");
@@ -26,6 +44,47 @@ export default function MarketplacePage() {
   const [search, setSearch] = useState("");
 
   useEffect(() => {
+    const userToken =
+      typeof window !== "undefined"
+        ? window.sessionStorage.getItem("w3s_user_token") ||
+          window.localStorage.getItem("w3s_user_token")
+        : null;
+    const walletId =
+      typeof window !== "undefined" ? window.localStorage.getItem("w3s_wallet_id") : null;
+
+    if (userToken && walletId) {
+      void (async () => {
+        try {
+          const response = await fetch("/api/endpoints", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "getTokenBalance",
+              userToken,
+              walletId,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            return;
+          }
+          const balances = (data.tokenBalances as TokenBalanceEntry[]) || [];
+          const usdcEntry =
+            balances.find((t) => {
+              const symbol = t.token?.symbol || "";
+              const name = t.token?.name || "";
+              return symbol.startsWith("USDC") || name.includes("USDC");
+            }) ?? null;
+          setWalletBalance(usdcEntry?.amount ?? "0");
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("w3s_wallet_usdc", usdcEntry?.amount ?? "0");
+          }
+        } catch {
+          // no-op
+        }
+      })();
+    }
+
     const timeout = setTimeout(() => {
       const mockData: Property[] = [
         {
@@ -89,6 +148,14 @@ export default function MarketplacePage() {
 
     return () => clearTimeout(timeout);
   }, []);
+
+  const handleAccountClick = () => {
+    if (walletAddress) {
+      router.push("/cuenta");
+      return;
+    }
+    router.push("/auth");
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -157,33 +224,10 @@ export default function MarketplacePage() {
 
           <div style={{ flex: 1 }} />
 
-          {/* Tabs */}
-          <nav
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              border: "1px solid rgba(255,255,255,0.10)",
-              borderRadius: 999,
-              padding: 6,
-              background: "rgba(255,255,255,0.03)",
-            }}
-          >
-            <TabBtn active={activeTab === "subasta"} onClick={() => setActiveTab("subasta")}>
-              Subasta
-            </TabBtn>
-            <TabBtn active={activeTab === "cerrada"} onClick={() => setActiveTab("cerrada")}>
-              Licitación cerrada
-            </TabBtn>
-            <TabBtn active={activeTab === "mercado"} onClick={() => setActiveTab("mercado")}>
-              Mercado Directo
-            </TabBtn>
-          </nav>
-
           {/* LIVE button (animado) */}
           <button
             type="button"
-            onClick={() => console.log("LIVE click")}
+            onClick={() => router.push("/pujas")}
             title="Entrar a Live"
             style={{
               display: "inline-flex",
@@ -222,24 +266,44 @@ export default function MarketplacePage() {
           </Link>
 
           {/* User / Cuenta */}
-          <Link
-            href="/cuenta"
-            title="Mi cuenta"
-            style={{
-              width: 42,
-              height: 42,
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: "rgba(255,255,255,0.04)",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textDecoration: "none",
-            }}
-          >
-            {/* Si tienes una imagen real, cambia a <img src="/user.png" ... /> */}
-            <UserAvatarIcon />
-          </Link>
+          <div className="userMenu" style={{ position: "relative" }}>
+            <button
+              type="button"
+              onClick={handleAccountClick}
+              title={walletAddress ? "Mi wallet" : "Iniciar sesión"}
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.14)",
+                background: "rgba(255,255,255,0.04)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              <UserAvatarIcon />
+            </button>
+
+            {walletAddress && (
+              <div className="walletPreview">
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                  Wallet
+                </div>
+                <div style={{ fontSize: 12, color: "white", wordBreak: "break-all" }}>
+                  {walletAddress}
+                </div>
+                <div style={{ marginTop: 8, fontSize: 11, color: "rgba(255,255,255,0.55)" }}>
+                  Balance USDC
+                </div>
+                <div style={{ fontSize: 12, color: "white" }}>
+                  {walletBalance ?? "—"}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -382,7 +446,7 @@ export default function MarketplacePage() {
               {filtered.map((property) => (
                 <Link
                   key={property.id}
-                  href={`/casa/${property.id}`}
+                  href="/pujas"
                   style={{ textDecoration: "none", color: "inherit" }}
                 >
                   <article
@@ -579,6 +643,29 @@ export default function MarketplacePage() {
           transform: translateY(-3px);
           border-color: rgba(103, 232, 249, 0.32);
           box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+        }
+
+        .walletPreview {
+          position: absolute;
+          right: 0;
+          top: calc(100% + 8px);
+          min-width: 220px;
+          max-width: 320px;
+          padding: 10px 12px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(0, 0, 0, 0.7);
+          backdrop-filter: blur(10px);
+          box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+          opacity: 0;
+          transform: translateY(-4px);
+          pointer-events: none;
+          transition: opacity 160ms ease, transform 160ms ease;
+        }
+
+        .userMenu:hover .walletPreview {
+          opacity: 1;
+          transform: translateY(0);
         }
 
         @media (max-width: 980px) {
