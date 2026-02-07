@@ -1,21 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { setCookie, getCookie } from "cookies-next";
+import { SocialLoginProvider } from "@circle-fin/w3s-pw-web-sdk/dist/src/types";
+import type { W3SSdk } from "@circle-fin/w3s-pw-web-sdk";
 import { useRouter } from "next/navigation";
-import { W3SSdk } from "@circle-fin/w3s-pw-web-sdk";
-
-type SvgProps = { className?: string };
 
 const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID as string;
+const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID as string;
 
 type LoginResult = {
   userToken: string;
   encryptionKey: string;
-};
-
-type LoginError = {
-  code?: number;
-  message?: string;
 };
 
 type Wallet = {
@@ -25,158 +21,88 @@ type Wallet = {
   [key: string]: unknown;
 };
 
-const IconMail = ({ className = "" }: SvgProps) => (
-  <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden="true">
-    <path
-      d="M4 7h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinejoin="round"
-    />
-    <path
-      d="m4 8 8 6 8-6"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
-
-const PrivyWordmark = ({ className = "" }: SvgProps) => (
-  <svg viewBox="0 0 120 24" className={className} fill="none" aria-hidden="true">
-    <text x="0" y="17" fill="currentColor" fontSize="16" fontFamily="ui-sans-serif, system-ui">
-      privy
-    </text>
-  </svg>
-);
-
-function cn(...a: (string | false | null | undefined)[]) {
-  return a.filter(Boolean).join(" ");
-}
-
-function isEmail(s: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
-}
-
-export default function AuthEntryPage() {
-  const sdkRef = useRef<W3SSdk | null>(null);
+export default function AuthPage() {
   const router = useRouter();
-
-  const ui = useMemo(
-    () => ({
-      bg: "bg-[#07090A]",
-      card: "bg-white/[0.04] border border-white/[0.08] shadow-[0_18px_70px_rgba(0,0,0,0.65)]",
-      input: "bg-[#0B0F14] border border-white/[0.10] focus:border-[#2DD4D4]/55",
-      teal: "text-[#2DD4D4]",
-      muted: "text-white/55",
-    }),
-    []
-  );
+  const sdkRef = useRef<W3SSdk | null>(null);
 
   const [sdkReady, setSdkReady] = useState(false);
   const [deviceId, setDeviceId] = useState<string>("");
   const [deviceIdLoading, setDeviceIdLoading] = useState(false);
 
-  const [email, setEmail] = useState("");
-  const [recentEmail, setRecentEmail] = useState("your@email.com"); // mock
-  const [mode, setMode] = useState<"entry" | "email" | "passkey">("entry");
-  const [toast, setToast] = useState("");
-  const [status, setStatus] = useState("Ready");
-  const [isError, setIsError] = useState(false);
-  const [flowBusy, setFlowBusy] = useState(false);
+  const [deviceToken, setDeviceToken] = useState<string>("");
+  const [deviceEncryptionKey, setDeviceEncryptionKey] = useState<string>("");
 
-  const [deviceToken, setDeviceToken] = useState("");
-  const [deviceEncryptionKey, setDeviceEncryptionKey] = useState("");
-  const [otpToken, setOtpToken] = useState("");
   const [loginResult, setLoginResult] = useState<LoginResult | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  const [challengeId, setChallengeId] = useState<string | null>(null);
   const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [status, setStatus] = useState<string>("Inicializando...");
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const flowRef = useRef(0);
-  const redirectOnceRef = useRef(false);
-
-  const persistSession = useCallback((token: string, encryptionKey: string) => {
-    if (typeof window === "undefined") return;
-    window.sessionStorage.setItem("w3s_user_token", token);
-    window.sessionStorage.setItem("w3s_encryption_key", encryptionKey);
-  }, []);
-
-  const persistWallet = (wallet: Wallet) => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("w3s_wallet_id", wallet.id);
-    window.localStorage.setItem("w3s_wallet_address", wallet.address);
-    window.localStorage.setItem("w3s_wallet_blockchain", wallet.blockchain);
-  };
-
-  const showToast = useCallback((m: string) => {
-    setToast(m);
-    setTimeout(() => setToast(""), 1200);
-  }, []);
-
-  const pickRecent = () => {
-    setEmail(recentEmail);
-    showToast("Email reciente seleccionado ✅");
-  };
-
-  const continueWithEmail = async () => {
-    if (!isEmail(email)) {
-      showToast("Pon un email válido 👀");
-      return;
-    }
-
-    const ok = await handleRequestOtp();
-    if (ok) {
-      setMode("email");
-    }
-  };
-
-  const handleLoginComplete = useCallback(
-    (error?: LoginError | null, result?: LoginResult | null) => {
-      if (error || !result) {
-        const message: string = error?.message || "Email authentication failed.";
-        setIsError(true);
-        setStatus(message);
-        setLoginResult(null);
-        showToast(message);
-        return;
-      }
-
-      setLoginResult(result);
-      persistSession(result.userToken, result.encryptionKey);
-      setIsError(false);
-      setStatus("Email verified. Initializing user...");
-      showToast("Email verificado ✅");
-    },
-    [persistSession, showToast],
-  );
-
+  // Initialize SDK on mount
   useEffect(() => {
     let cancelled = false;
 
     const initSdk = async () => {
       try {
-        const sdk = new W3SSdk(
-          {
-            appSettings: { appId },
-          },
-          (error, result) => {
-            if (cancelled) return;
-            handleLoginComplete(error, result);
-          },
-        );
+        const { W3SSdk } = await import("@circle-fin/w3s-pw-web-sdk");
 
+        const onLoginComplete = (error: unknown, result: any) => {
+          if (cancelled) return;
+
+          if (error) {
+            const err = error as any;
+            console.error("Login failed:", err);
+            setLoginError(err.message || "Login failed");
+            setLoginResult(null);
+            setStatus("Login fallido");
+            setIsProcessing(false);
+            return;
+          }
+
+          console.log("✅ Login successful:", result);
+          setLoginResult({
+            userToken: result.userToken,
+            encryptionKey: result.encryptionKey,
+          });
+          setLoginError(null);
+          setStatus("Login exitoso. Inicializando usuario...");
+        };
+
+        // Restore configs from cookies (after Google redirect)
+        const restoredAppId = (getCookie("appId") as string) || appId || "";
+        const restoredGoogleClientId =
+          (getCookie("google.clientId") as string) || googleClientId || "";
+        const restoredDeviceToken = (getCookie("deviceToken") as string) || "";
+        const restoredDeviceEncryptionKey =
+          (getCookie("deviceEncryptionKey") as string) || "";
+
+        const initialConfig = {
+          appSettings: { appId: restoredAppId },
+          loginConfigs: {
+            deviceToken: restoredDeviceToken,
+            deviceEncryptionKey: restoredDeviceEncryptionKey,
+            google: {
+              clientId: restoredGoogleClientId,
+              redirectUri:
+                typeof window !== "undefined" ? window.location.origin + "/auth" : "",
+              selectAccountPrompt: true,
+            },
+          },
+        };
+
+        const sdk = new W3SSdk(initialConfig, onLoginComplete);
         sdkRef.current = sdk;
 
         if (!cancelled) {
           setSdkReady(true);
-          setIsError(false);
-          setStatus("SDK initialized. Ready to request OTP.");
+          setStatus("SDK inicializado");
         }
       } catch (err) {
-        console.log("Failed to initialize Web SDK:", err);
+        console.error("Failed to initialize Web SDK:", err);
         if (!cancelled) {
-          setIsError(true);
-          setStatus("Failed to initialize Web SDK");
+          setStatus("Error al inicializar SDK");
         }
       }
     };
@@ -186,18 +112,22 @@ export default function AuthEntryPage() {
     return () => {
       cancelled = true;
     };
-  }, [handleLoginComplete]);
+  }, []);
 
+  // Get deviceId
   useEffect(() => {
     const fetchDeviceId = async () => {
       if (!sdkRef.current) return;
 
       try {
         const cached =
-          typeof window !== "undefined" ? window.localStorage.getItem("deviceId") : null;
+          typeof window !== "undefined"
+            ? window.localStorage.getItem("deviceId")
+            : null;
 
         if (cached) {
           setDeviceId(cached);
+          setStatus("Listo para iniciar sesión");
           return;
         }
 
@@ -208,10 +138,10 @@ export default function AuthEntryPage() {
         if (typeof window !== "undefined") {
           window.localStorage.setItem("deviceId", id);
         }
+        setStatus("Listo para iniciar sesión");
       } catch (error) {
-        console.log("Failed to get deviceId:", error);
-        setIsError(true);
-        setStatus("Failed to get deviceId");
+        console.error("Failed to get deviceId:", error);
+        setStatus("Error al obtener deviceId");
       } finally {
         setDeviceIdLoading(false);
       }
@@ -222,111 +152,220 @@ export default function AuthEntryPage() {
     }
   }, [sdkReady]);
 
-  const handleRequestOtp = async () => {
-    if (!isEmail(email)) {
-      showToast("Pon un email válido 👀");
-      return false;
-    }
+  // Handle complete auth flow after login
+  useEffect(() => {
+    if (!loginResult?.userToken) return;
+    if (isProcessing) return;
 
+    const handleCompleteAuthFlow = async () => {
+      setIsProcessing(true);
+      try {
+        // Step 1: Initialize user
+        await handleInitializeUser();
+      } catch (err) {
+        console.error("Auth flow error:", err);
+        setIsProcessing(false);
+      }
+    };
+
+    void handleCompleteAuthFlow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loginResult]);
+
+  const handleCreateDeviceToken = async () => {
     if (!deviceId) {
-      showToast("Falta deviceId. Espera un momento.");
-      return false;
+      setStatus("Esperando deviceId...");
+      return;
     }
-
-    setLoginResult(null);
-    setWallets([]);
 
     try {
-      setIsError(false);
-      setStatus("Requesting OTP...");
-
+      setStatus("Creando device token...");
       const response = await fetch("/api/endpoints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "requestEmailOtp",
+          action: "createDeviceToken",
           deviceId,
-          email,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        const msg = data.error || data.message || "Failed to request OTP";
-        setIsError(true);
-        setStatus(msg);
-        showToast(msg);
+        console.error("Create device token failed:", data);
+        setStatus("Error al crear device token");
         return false;
       }
 
       setDeviceToken(data.deviceToken);
       setDeviceEncryptionKey(data.deviceEncryptionKey);
-      setOtpToken(data.otpToken);
-      setRecentEmail(email);
 
-      const sdk = sdkRef.current;
-      if (sdk) {
-        sdk.updateConfigs(
-          {
-            appSettings: { appId },
-            loginConfigs: {
-              deviceToken: data.deviceToken,
-              deviceEncryptionKey: data.deviceEncryptionKey,
-              otpToken: data.otpToken,
-            },
-          },
-          handleLoginComplete,
-        );
-      }
+      setCookie("deviceToken", data.deviceToken);
+      setCookie("deviceEncryptionKey", data.deviceEncryptionKey);
 
-      setIsError(false);
-      setStatus("OTP sent. Open the verification panel to continue.");
-      showToast("OTP enviado ✉️");
+      setStatus("Device token creado");
       return true;
-    } catch {
-      setIsError(true);
-      setStatus("Failed to request OTP");
-      showToast("Error al enviar OTP");
+    } catch (err) {
+      console.error("Error creating device token:", err);
+      setStatus("Error al crear device token");
       return false;
     }
   };
 
-  const handleVerifyOtp = () => {
+  const handleLoginWithGoogle = async () => {
     const sdk = sdkRef.current;
     if (!sdk) {
-      showToast("SDK not ready");
+      setStatus("SDK no está listo");
       return;
     }
 
-    if (!deviceToken || !deviceEncryptionKey || !otpToken) {
-      showToast("Falta la sesión OTP. Reenvía el código.");
+    setIsProcessing(true);
+
+    // Create device token first if not exists
+    if (!deviceToken || !deviceEncryptionKey) {
+      const success = await handleCreateDeviceToken();
+      if (!success) {
+        setIsProcessing(false);
+        return;
+      }
+      // Wait for state to update
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    // Use current state or get from cookies
+    const currentDeviceToken = deviceToken || (getCookie("deviceToken") as string);
+    const currentDeviceEncryptionKey =
+      deviceEncryptionKey || (getCookie("deviceEncryptionKey") as string);
+
+    if (!currentDeviceToken || !currentDeviceEncryptionKey) {
+      setStatus("Falta device token. Intenta de nuevo.");
+      setIsProcessing(false);
       return;
     }
 
-    sdk.updateConfigs(
-      {
-        appSettings: { appId },
-        loginConfigs: {
-          deviceToken,
-          deviceEncryptionKey,
-          otpToken,
+    // Persist configs for after redirect
+    setCookie("appId", appId);
+    setCookie("google.clientId", googleClientId);
+    setCookie("deviceToken", currentDeviceToken);
+    setCookie("deviceEncryptionKey", currentDeviceEncryptionKey);
+
+    sdk.updateConfigs({
+      appSettings: {
+        appId,
+      },
+      loginConfigs: {
+        deviceToken: currentDeviceToken,
+        deviceEncryptionKey: currentDeviceEncryptionKey,
+        google: {
+          clientId: googleClientId,
+          redirectUri: window.location.origin + "/auth",
+          selectAccountPrompt: true,
         },
       },
-      handleLoginComplete,
-    );
+    });
 
-    setIsError(false);
-    setStatus("Opening OTP verification panel...");
-    sdk.verifyOtp();
+    setStatus("Redirigiendo a Google...");
+    sdk.performLogin(SocialLoginProvider.GOOGLE);
   };
 
-  const loadWallets = useCallback(
-    async (userToken: string, options?: { source?: "afterCreate" | "alreadyInitialized" }) => {
-    try {
-      setIsError(false);
-      setStatus("Loading wallet details...");
+  const handleInitializeUser = async () => {
+    if (!loginResult?.userToken) {
+      setStatus("Falta userToken");
+      return;
+    }
 
+    try {
+      setStatus("Inicializando usuario...");
+      console.log("🔄 Initializing user with token:", loginResult.userToken.substring(0, 10) + "...");
+
+      const response = await fetch("/api/endpoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "initializeUser",
+          userToken: loginResult.userToken,
+        }),
+      });
+
+      const data = await response.json();
+      console.log("📥 Initialize response:", data);
+
+      if (!response.ok) {
+        // 155106 = user already initialized
+        if (data.code === 155106) {
+          console.log("✅ Usuario ya inicializado, cargando wallets...");
+          setStatus("Usuario ya existe. Cargando wallet...");
+          await loadWalletsAndRedirect(loginResult.userToken);
+          return;
+        }
+
+        const errorMsg = data.code
+          ? `[${data.code}] ${data.error || data.message}`
+          : data.error || data.message;
+        console.error("❌ Initialize error:", errorMsg);
+        setStatus("Error al inicializar: " + errorMsg);
+        setIsProcessing(false);
+        return;
+      }
+
+      // New user → got challengeId for initialization (wallet created automatically)
+      console.log("✅ Usuario inicializado, challengeId:", data.challengeId);
+      setStatus(`Creando wallet...`);
+      
+      // Execute the initialization challenge (creates wallet)
+      await executeChallenge(data.challengeId);
+      
+      // Wait for Circle to index the wallet
+      console.log("⏳ Waiting for Circle to index wallet...");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      
+      // Load wallet and redirect
+      await loadWalletsAndRedirect(loginResult.userToken);
+    } catch (err) {
+      console.error("❌ Error initializing user:", err);
+      setStatus("Error al inicializar usuario");
+      setIsProcessing(false);
+    }
+  };
+
+  const executeChallenge = async (challengeId: string) => {
+    const sdk = sdkRef.current;
+    if (!sdk) {
+      setStatus("SDK no está listo");
+      throw new Error("SDK not ready");
+    }
+
+    if (!loginResult?.userToken || !loginResult?.encryptionKey) {
+      setStatus("Falta credenciales de login");
+      throw new Error("Missing credentials");
+    }
+
+    console.log("🔄 Setting authentication and executing challenge:", challengeId);
+    sdk.setAuthentication({
+      userToken: loginResult.userToken,
+      encryptionKey: loginResult.encryptionKey,
+    });
+
+    return new Promise<void>((resolve, reject) => {
+      sdk.execute(challengeId, (error) => {
+        if (error) {
+          const err = error as any;
+          console.error("❌ Execute challenge failed:", err);
+          setStatus("Error al ejecutar challenge: " + (err?.message ?? "Error desconocido"));
+          reject(err);
+        } else {
+          console.log("✅ Challenge executed successfully");
+          resolve();
+        }
+      });
+    });
+  };
+
+  const loadWalletsAndRedirect = async (userToken: string) => {
+    try {
+      console.log("🔄 Loading wallets for user...");
+      setStatus("Cargando wallets...");
+      
       const response = await fetch("/api/endpoints", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -337,389 +376,123 @@ export default function AuthEntryPage() {
       });
 
       const data = await response.json();
+      console.log("📥 Wallets response:", data);
 
       if (!response.ok) {
-        setIsError(true);
-        setStatus("Failed to load wallet details");
-        return [];
+        console.error("❌ List wallets failed:", data);
+        setStatus("Error al cargar wallets");
+        setIsProcessing(false);
+        return;
       }
 
-      const nextWallets = (data.wallets as Wallet[]) || [];
-      setWallets(nextWallets);
+      const wallets = (data.wallets as Wallet[]) || [];
+      console.log("✅ Wallets loaded:", wallets);
 
-      if (nextWallets.length > 0) {
-        persistWallet(nextWallets[0]);
-        if (!redirectOnceRef.current) {
-          redirectOnceRef.current = true;
-          router.push("/marketplace");
-        }
-        if (options?.source === "afterCreate") {
-          setStatus("Wallet created successfully. Ready to use.");
-        } else if (options?.source === "alreadyInitialized") {
-          setStatus("Wallet found. Ready to use.");
-        } else {
-          setStatus("Wallet loaded.");
-        }
+      if (wallets.length > 0) {
+        console.log("✅ Wallet found:", wallets[0].address);
+        setWallets(wallets);
+        
+        // Save to localStorage (Circle's Web SDK approach)
+        localStorage.setItem("userToken", loginResult!.userToken);
+        localStorage.setItem("encryptionKey", loginResult!.encryptionKey);
+        localStorage.setItem("walletId", wallets[0].id);
+        localStorage.setItem("walletAddress", wallets[0].address);
+        localStorage.setItem("userId", wallets[0].userId || wallets[0].id);
+        
+        console.log("✅ Saved to localStorage, redirecting...");
+        setStatus("✅ Success! Redirecting...");
+        
+        // Immediate redirect
+        router.push("/auctions");
       } else {
-        setStatus("No wallet found yet.");
+        console.warn("⚠️ No wallets found for user");
+        setStatus("Error: No wallet found");
+        setIsProcessing(false);
       }
-
-      return nextWallets;
-    } catch {
-      setIsError(true);
-      setStatus("Failed to load wallet details");
-      return [];
+    } catch (err) {
+      console.error("❌ Failed to load wallets:", err);
+      setStatus("Error al cargar wallets");
+      setIsProcessing(false);
     }
-    },
-    [router],
-  );
-
-  const initializeUser = async (userToken: string) => {
-    const response = await fetch("/api/endpoints", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "initializeUser",
-        userToken,
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      if (data?.code === 155106) {
-        return { alreadyInitialized: true };
-      }
-
-      const errorMsg = data?.code
-        ? `[${data.code}] ${data.error || data.message}`
-        : data?.error || data?.message || "Failed to initialize user";
-      throw new Error(errorMsg);
-    }
-
-    return { challengeId: data.challengeId as string };
   };
-
-  const executeChallenge = async (challengeId: string, creds: LoginResult) => {
-    const sdk = sdkRef.current;
-    if (!sdk) {
-      throw new Error("SDK not ready");
-    }
-
-    sdk.setAuthentication({
-      userToken: creds.userToken,
-      encryptionKey: creds.encryptionKey,
-    });
-
-    setStatus("Creating wallet...");
-
-    await new Promise<void>((resolve, reject) => {
-      sdk.execute(challengeId, (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
-  };
-
-  useEffect(() => {
-    if (!loginResult) return;
-
-    const currentFlow = ++flowRef.current;
-    let cancelled = false;
-
-    const runFlow = async () => {
-      setFlowBusy(true);
-      setIsError(false);
-      setStatus("Initializing user...");
-
-      try {
-        const init = await initializeUser(loginResult.userToken);
-        if (cancelled || currentFlow !== flowRef.current) return;
-
-        if (init.alreadyInitialized) {
-          const found = await loadWallets(loginResult.userToken, {
-            source: "alreadyInitialized",
-          });
-          if (found.length > 0) {
-            showToast("Wallet lista ✅");
-          }
-          return;
-        }
-
-        if (init.challengeId) {
-          await executeChallenge(init.challengeId, loginResult);
-          if (cancelled || currentFlow !== flowRef.current) return;
-
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          await loadWallets(loginResult.userToken, { source: "afterCreate" });
-          showToast("Wallet creada ✅");
-        }
-      } catch (err: unknown) {
-        const msg =
-          err instanceof Error ? err.message : "Failed to initialize wallet flow";
-        setIsError(true);
-        setStatus(msg);
-        showToast(msg);
-      } finally {
-        if (!cancelled && currentFlow === flowRef.current) {
-          setFlowBusy(false);
-        }
-      }
-    };
-
-    void runFlow();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [loadWallets, loginResult, showToast]);
-
-  const canRequestOtp =
-    sdkReady && !!deviceId && !deviceIdLoading && isEmail(email) && !flowBusy;
-  const canVerifyOtp =
-    sdkReady &&
-    !!deviceToken &&
-    !!deviceEncryptionKey &&
-    !!otpToken &&
-    !loginResult &&
-    !flowBusy;
 
   const primaryWallet = wallets[0];
 
   return (
-    <div className={cn("min-h-screen text-white", ui.bg)}>
-      {/* fondo suave */}
-      <div className="pointer-events-none fixed inset-0 opacity-60">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_15%,rgba(45,212,212,0.10),transparent_45%),radial-gradient(circle_at_80%_40%,rgba(255,255,255,0.05),transparent_55%),radial-gradient(circle_at_20%_70%,rgba(45,212,212,0.06),transparent_60%)]" />
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl p-8">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-white mb-2">🏠 ZKBricks</h1>
+          <p className="text-gray-300">Subasta Descentralizada</p>
+        </div>
 
-      <div className="relative mx-auto flex min-h-screen max-w-6xl items-center justify-center px-4">
-        {/* container */}
-        <div className="w-full max-w-[520px]">
-          {/* logo arriba (placeholder) */}
-          <div className="mb-6 flex items-center justify-center">
-            <div className="h-10 w-10 rounded-2xl border border-white/[0.10] bg-white/[0.03]" />
+        {/* Status */}
+        <div className="mb-6 p-4 bg-black/30 rounded-lg border border-white/10">
+          <p className="text-sm text-gray-300">
+            <strong className="text-white">Estado:</strong> {status}
+          </p>
+          {loginError && (
+            <p className="text-sm text-red-400 mt-2">
+              <strong>Error:</strong> {loginError}
+            </p>
+          )}
+        </div>
+
+        {/* Login Button */}
+        {!loginResult && !isProcessing && (
+          <button
+            onClick={handleLoginWithGoogle}
+            disabled={!sdkReady || !deviceId || deviceIdLoading}
+            className="w-full py-4 bg-white hover:bg-gray-100 text-gray-900 font-semibold rounded-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-3"
+          >
+            <svg className="w-6 h-6" viewBox="0 0 24 24">
+              <path
+                fill="currentColor"
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              />
+              <path
+                fill="currentColor"
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+              />
+              <path
+                fill="currentColor"
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+              />
+              <path
+                fill="currentColor"
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+              />
+            </svg>
+            Iniciar Sesión con Google
+          </button>
+        )}
+
+        {/* Processing State */}
+        {isProcessing && (
+          <div className="text-center py-8">
+            <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-white/20 border-t-purple-500 mb-4"></div>
+            <p className="text-gray-300">Procesando...</p>
           </div>
+        )}
 
-          {/* Card principal */}
-          <div className={cn("rounded-[28px] px-6 py-8 sm:px-8", ui.card)}>
-            {mode === "entry" && (
-              <>
-                <h1 className="text-center text-3xl font-semibold tracking-tight">
-                  Log in or sign up
-                </h1>
-
-                {/* input grande */}
-                <div className="mt-7">
-                  <div
-                    className={cn(
-                      "flex items-center gap-3 rounded-[22px] px-4 py-4",
-                      ui.input
-                    )}
-                  >
-                    <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/[0.04] text-white/65">
-                      <IconMail className="h-6 w-6" />
-                    </div>
-
-                    <input
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="your@email.com"
-                      className="h-12 flex-1 bg-transparent text-lg text-white/85 outline-none placeholder:text-white/35"
-                      inputMode="email"
-                      autoComplete="email"
-                    />
-
-                    <button
-                      type="button"
-                      onClick={pickRecent}
-                      className="rounded-full bg-white/[0.04] px-4 py-2 text-sm text-white/70 hover:bg-white/[0.06] transition"
-                      title="Usar email reciente"
-                    >
-                      Recent
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={continueWithEmail}
-                    disabled={!canRequestOtp}
-                    className={cn(
-                      "mt-4 w-full rounded-[18px] px-5 py-4 font-semibold text-black transition",
-                      canRequestOtp
-                        ? "bg-[#2DD4D4] hover:brightness-110"
-                        : "bg-white/20 text-white/50 cursor-not-allowed"
-                    )}
-                  >
-                    Continue
-                  </button>
-                </div>
-
-                {/* link passkey */}
-                <div className="mt-6 text-center">
-                  <button
-                    type="button"
-                    onClick={() => setMode("passkey")}
-                    className={cn("text-base font-medium hover:opacity-90 transition", ui.teal)}
-                  >
-                    I have a passkey
-                  </button>
-                </div>
-
-                {/* footer privy */}
-                <div className="mt-10 flex items-center justify-center gap-2 text-sm text-white/45">
-                  <span>Protected by</span>
-                  <span className="inline-flex items-center gap-2 text-white/55">
-                    <span className="h-4 w-4 rounded-full bg-white/20" />
-                    <PrivyWordmark className="h-5 w-12" />
-                  </span>
-                </div>
-              </>
-            )}
-
-            {mode === "email" && (
-              <>
-                <div className="flex items-center justify-between">
-                  <button
-                    onClick={() => setMode("entry")}
-                    className="rounded-full bg-white/[0.04] px-4 py-2 text-sm text-white/70 hover:bg-white/[0.06] transition"
-                  >
-                    ← Back
-                  </button>
-                  <span className="text-xs text-white/50">Email login</span>
-                </div>
-
-                <h2 className="mt-5 text-2xl font-semibold">Check your email</h2>
-                <p className="mt-2 text-sm text-white/55">
-                  Enviaremos un código a <span className="text-white/80 font-semibold">{email}</span>.
-                </p>
-
-                <div className="mt-6 rounded-[22px] border border-white/[0.10] bg-black/30 p-4">
-                  <div className="text-xs text-white/55">
-                    Verificación con el mismo panel del paso 2 en /wallets
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleVerifyOtp}
-                    disabled={!canVerifyOtp}
-                    className={cn(
-                      "mt-3 w-full rounded-[18px] px-5 py-4 font-semibold transition",
-                      canVerifyOtp
-                        ? "bg-[#2DD4D4] text-black hover:brightness-110"
-                        : "bg-white/20 text-white/50 cursor-not-allowed"
-                    )}
-                  >
-                    Open verification panel
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleRequestOtp}
-                    disabled={!canRequestOtp}
-                    className={cn(
-                      "mt-3 w-full rounded-[18px] border border-white/[0.10] px-5 py-3 text-sm font-semibold transition",
-                      canRequestOtp
-                        ? "bg-white/[0.04] text-white/80 hover:bg-white/[0.06]"
-                        : "bg-white/[0.02] text-white/40 cursor-not-allowed"
-                    )}
-                  >
-                    Resend code
-                  </button>
-                </div>
-
-                {loginResult && (
-                  <div className="mt-4 rounded-[18px] border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">
-                    Email verificado. Sesión lista.
-                  </div>
-                )}
-
-                {flowBusy && (
-                  <div className="mt-4 rounded-[18px] border border-white/[0.12] bg-white/[0.04] px-4 py-3 text-xs text-white/70">
-                    Inicializando usuario y wallet...
-                  </div>
-                )}
-
-                {!flowBusy && loginResult && !primaryWallet && (
-                  <div className="mt-4 rounded-[18px] border border-white/[0.12] bg-white/[0.02] px-4 py-3 text-xs text-white/60">
-                    Aún no vemos una wallet. Si eres nuevo, la estamos creando.
-                  </div>
-                )}
-
-                {primaryWallet && (
-                  <div className="mt-4 rounded-[18px] border border-emerald-400/20 bg-emerald-500/10 px-4 py-4 text-xs text-emerald-100">
-                    <div className="text-sm font-semibold text-emerald-50">Wallet lista</div>
-                    <div className="mt-2">
-                      <span className="text-emerald-200/80">Address:</span>{" "}
-                      <span className="break-all">{primaryWallet.address}</span>
-                    </div>
-                    <div className="mt-1">
-                      <span className="text-emerald-200/80">Blockchain:</span>{" "}
-                      {primaryWallet.blockchain}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {mode === "passkey" && (
-              <>
-                <div className="flex items-center justify-between">
-                  <button
-                    onClick={() => setMode("entry")}
-                    className="rounded-full bg-white/[0.04] px-4 py-2 text-sm text-white/70 hover:bg-white/[0.06] transition"
-                  >
-                    ← Back
-                  </button>
-                  <span className="text-xs text-white/50">Passkey</span>
-                </div>
-
-                <h2 className="mt-5 text-2xl font-semibold">Use your passkey</h2>
-                <p className="mt-2 text-sm text-white/55">
-                  Face ID / Touch ID / Windows Hello. Sin contraseña.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() => showToast("Aquí llamas WebAuthn / Privy Passkey")}
-                  className="mt-6 w-full rounded-[18px] border border-white/[0.10] bg-white/[0.04] px-5 py-4 font-semibold text-white/80 hover:bg-white/[0.06] transition"
-                >
-                  Continue with passkey
-                </button>
-
-                <div className="mt-10 flex items-center justify-center gap-2 text-sm text-white/45">
-                  <span>Protected by</span>
-                  <span className="inline-flex items-center gap-2 text-white/55">
-                    <span className="h-4 w-4 rounded-full bg-white/20" />
-                    <PrivyWordmark className="h-5 w-12" />
-                  </span>
-                </div>
-              </>
-            )}
+        {/* Wallet Created */}
+        {primaryWallet && (
+          <div className="mt-6 p-4 bg-gradient-to-br from-green-500/20 to-emerald-500/20 border border-green-500/30 rounded-lg">
+            <h3 className="text-white font-semibold mb-2">✅ Wallet Creada</h3>
+            <p className="text-sm text-gray-300 break-all">
+              {primaryWallet.address}
+            </p>
           </div>
+        )}
+
+        {/* Info */}
+        <div className="mt-8 text-center">
+          <p className="text-xs text-gray-400">
+            Powered by Circle Programmable Wallets
+          </p>
         </div>
       </div>
-
-      <div className="pointer-events-none fixed bottom-6 right-6 hidden max-w-xs rounded-2xl border border-white/[0.10] bg-black/60 px-4 py-3 text-xs text-white/80 backdrop-blur sm:block">
-        <div className={cn("font-medium", isError ? "text-rose-300" : "text-white/80")}>
-          Status
-        </div>
-        <div className={cn("mt-1", isError ? "text-rose-200" : "text-white/60")}>
-          {status}
-        </div>
-      </div>
-
-      {/* Toast */}
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2">
-          <div className="rounded-full border border-white/[0.10] bg-black/70 px-4 py-2 text-xs text-white/80 backdrop-blur">
-            {toast}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
