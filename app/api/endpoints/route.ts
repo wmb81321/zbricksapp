@@ -80,42 +80,32 @@ export async function POST(request: Request) {
           );
         }
 
-        try {
-          const response = await circleClient.createUser({
-            userToken,
-            accountType: "SCA",
-            blockchains: ["BASE-SEPOLIA"],
-          });
+        const response = await fetch(
+          `${CIRCLE_BASE_URL}/v1/w3s/user/initialize`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${CIRCLE_API_KEY}`,
+              "X-User-Token": userToken,
+            },
+            body: JSON.stringify({
+              idempotencyKey: crypto.randomUUID(),
+              accountType: "SCA",
+              blockchains: ["BASE-SEPOLIA"],
+            }),
+          },
+        );
 
-          return NextResponse.json(response.data, { status: 200 });
-        } catch (error: any) {
-          // Handle user already exists (code 155106)
-          if (error.code === 155106 || error.response?.data?.code === 155106) {
-            return NextResponse.json(
-              { code: 155106, message: "User already initialized" },
-              { status: 409 },
-            );
-          }
-          throw error;
-        }
-      }
+        const data = await response.json();
 
-      case "createWallet": {
-        const { userToken, blockchains } = params;
-        if (!userToken) {
-          return NextResponse.json(
-            { error: "Missing userToken" },
-            { status: 400 },
-          );
+        if (!response.ok) {
+          // Pass through Circle error payload (e.g. code 155106: user already initialized)
+          return NextResponse.json(data, { status: response.status });
         }
 
-        const response = await circleClient.createWallets({
-          userToken,
-          accountType: "SCA",
-          blockchains: blockchains || ["BASE-SEPOLIA"],
-        });
-
-        return NextResponse.json(response.data, { status: 200 });
+        // Returns: { challengeId }
+        return NextResponse.json(data.data, { status: 200 });
       }
 
       case "listWallets": {
@@ -127,11 +117,24 @@ export async function POST(request: Request) {
           );
         }
 
-        const response = await circleClient.listWallets({
-          userToken,
+        const response = await fetch(`${CIRCLE_BASE_URL}/v1/w3s/wallets`, {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            Authorization: `Bearer ${CIRCLE_API_KEY}`,
+            "X-User-Token": userToken,
+          },
         });
 
-        return NextResponse.json(response.data, { status: 200 });
+        const data = await response.json();
+
+        if (!response.ok) {
+          return NextResponse.json(data, { status: response.status });
+        }
+
+        // Returns: { wallets: [...] }
+        return NextResponse.json(data.data, { status: 200 });
       }
 
       case "getTokenBalance": {
@@ -143,12 +146,26 @@ export async function POST(request: Request) {
           );
         }
 
-        const response = await circleClient.getWalletTokenBalance({
-          userToken,
-          id: walletId,
-        });
+        const response = await fetch(
+          `${CIRCLE_BASE_URL}/v1/w3s/wallets/${walletId}/balances`,
+          {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+              Authorization: `Bearer ${CIRCLE_API_KEY}`,
+              "X-User-Token": userToken,
+            },
+          },
+        );
 
-        return NextResponse.json(response.data, { status: 200 });
+        const data = await response.json();
+
+        if (!response.ok) {
+          return NextResponse.json(data, { status: response.status });
+        }
+
+        // Returns: { tokenBalances: [...] }
+        return NextResponse.json(data.data, { status: 200 });
       }
 
       case "createTransferChallenge": {
@@ -201,9 +218,29 @@ export async function POST(request: Request) {
           );
         }
 
-        const response = await circleClient.createTransaction(transferConfig);
+        const response = await fetch(
+          `${CIRCLE_BASE_URL}/v1/w3s/user/transactions/transfer`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${CIRCLE_API_KEY}`,
+              "X-User-Token": userToken,
+            },
+            body: JSON.stringify({
+              idempotencyKey: crypto.randomUUID(),
+              ...transferConfig,
+            }),
+          },
+        );
 
-        return NextResponse.json(response.data, { status: 200 });
+        const data = await response.json();
+
+        if (!response.ok) {
+          return NextResponse.json(data, { status: response.status });
+        }
+
+        return NextResponse.json(data.data, { status: 200 });
       }
 
       case "createContractExecutionChallenge": {
@@ -231,22 +268,39 @@ export async function POST(request: Request) {
           );
         }
 
-        const response = await circleClient.createContractExecutionTransaction({
-          userToken,
-          walletId,
-          contractAddress,
-          abiFunctionSignature,
-          abiParameters,
-          callData,
-          fee: {
-            type: "level",
-            config: {
-              feeLevel: feeLevel ?? "MEDIUM",
+        const response = await fetch(
+          `${CIRCLE_BASE_URL}/v1/w3s/user/transactions/contractExecution`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${CIRCLE_API_KEY}`,
+              "X-User-Token": userToken,
             },
+            body: JSON.stringify({
+              idempotencyKey: crypto.randomUUID(),
+              walletId,
+              contractAddress,
+              abiFunctionSignature,
+              abiParameters,
+              callData,
+              fee: {
+                type: "level",
+                config: {
+                  feeLevel: feeLevel ?? "MEDIUM",
+                },
+              },
+            }),
           },
-        });
+        );
 
-        return NextResponse.json(response.data, { status: 200 });
+        const data = await response.json();
+
+        if (!response.ok) {
+          return NextResponse.json(data, { status: response.status });
+        }
+
+        return NextResponse.json(data.data, { status: 200 });
       }
 
       case "signTypedDataChallenge": {

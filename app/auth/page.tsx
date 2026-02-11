@@ -86,7 +86,7 @@ export default function AuthPage() {
             google: {
               clientId: restoredGoogleClientId,
               redirectUri:
-                typeof window !== "undefined" ? window.location.origin + "/auth" : "",
+                typeof window !== "undefined" ? window.location.origin : "",
               selectAccountPrompt: true,
             },
           },
@@ -258,7 +258,7 @@ export default function AuthPage() {
         deviceEncryptionKey: currentDeviceEncryptionKey,
         google: {
           clientId: googleClientId,
-          redirectUri: window.location.origin + "/auth",
+          redirectUri: window.location.origin,
           selectAccountPrompt: true,
         },
       },
